@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markov Mlynarski</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --panel: #ffffff; --ink: #1b1b1f; --muted: #6a6a74;
+    --line: #e2e0da; --accent: #3d5a80; --accent-ink: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --panel: #1e1e23; --ink: #e8e6e1; --muted: #9a99a3;
+      --line: #2e2e35; --accent: #7fa3cc; --accent-ink: #14141a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 16px 64px; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 ui-serif, Georgia, "Times New Roman", serif;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 0 0 1.75rem; }
+  .sub code { font-size: .85em; }
+  fieldset {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+    padding: 18px; margin: 0 0 20px;
+  }
+  legend { padding: 0 8px; font-size: .78rem; text-transform: uppercase;
+           letter-spacing: .08em; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 5px; }
+  input, select, button {
+    font: inherit; font-size: .95rem; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px;
+  }
+  input[type=number] { width: 92px; }
+  #prime { width: 100%; }
+  .grow { flex: 1 1 260px; }
+  button {
+    background: var(--accent); color: var(--accent-ink); border-color: transparent;
+    cursor: pointer; padding: 9px 18px; font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--muted); border-color: var(--line); }
+  #out p {
+    margin: 0 0 1.1rem; padding-left: 14px; border-left: 2px solid var(--line);
+  }
+  #out p:last-child { margin-bottom: 0; }
+  .stats, footer {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .75rem; color: var(--muted);
+  }
+  .stats { margin-top: 10px; }
+  footer { margin-top: 32px; border-top: 1px solid var(--line); padding-top: 14px; line-height: 1.8; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Markov Mlynarski</h1>
+  <p class="sub">
+    An order-2 word-level Markov chain trained on the published papers and preprints of
+    Wiktor M&#322;ynarski. Everything runs in your browser from a table of transition counts.
+  </p>
+
+  <fieldset>
+    <legend>Sampling</legend>
+    <div class="row">
+      <div>
+        <label for="n">Sentences</label>
+        <input type="number" id="n" value="4" min="1" max="50">
+      </div>
+      <div>
+        <label for="stopmode">Stop on</label>
+        <select id="stopmode">
+          <option value="final">Sentence-final words</option>
+          <option value="function">Function words</option>
+        </select>
+      </div>
+      <div>
+        <label for="maxlen">Max words</label>
+        <input type="number" id="maxlen" value="120" min="10" max="800">
+      </div>
+      <div>
+        <label for="seed">Seed</label>
+        <input type="number" id="seed" placeholder="random">
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div class="grow">
+        <label for="prime">Opening words (optional)</label>
+        <input type="text" id="prime" placeholder="efficient coding predicts">
+      </div>
+      <button id="go" disabled>Generate</button>
+      <button id="copy" class="ghost">Copy</button>
+    </div>
+    <div class="stats" id="stats">loading model&hellip;</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Output</legend>
+    <div id="out"><p style="color:var(--muted);border-color:transparent;padding-left:0">
+      Waiting for the model.</p></div>
+  </fieldset>
+
+  <footer>
+    Sampling backs off from 2-gram to 1-gram contexts for unseen states. A sampled
+    sentence end only takes effect when the last word is in the selected stop set;
+    otherwise the end token is rejected and generation continues.<br>
+    Source and corpus-building scripts: <a href="https://github.com/maxsiegel/mlynarski-markov">github.com/maxsiegel/mlynarski-markov</a>
+  </footer>
+</main>
+
+<script>
+const EL = id => document.getElementById(id);
+let M = null;
+
+/** Deterministic PRNG so a given seed reproduces an output. */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/** Rebuild context -> row lookups from the flattened count tables. */
+function index(model, arity, V) {
+  const map = new Map();
+  const rows = model.off.length - 1;
+  for (let r = 0; r < rows; r++) {
+    const key = arity === 1 ? model.ctx[r]
+                            : model.ctx[2 * r] * V + model.ctx[2 * r + 1];
+    map.set(key, r);
+  }
+  return map;
+}
+
+function pick(model, row, rng, forbid) {
+  const lo = model.off[row], hi = model.off[row + 1];
+  let total = 0;
+  for (let i = lo; i < hi; i++) if (model.nxt[i] !== forbid) total += model.cnt[i];
+  if (total === 0) return -1;
+  let r = rng() * total;
+  for (let i = lo; i < hi; i++) {
+    if (model.nxt[i] === forbid) continue;
+    r -= model.cnt[i];
+    if (r <= 0) return model.nxt[i];
+  }
+  return -1;
+}
+
+/** Sample the next token id, backing off from the 2-gram to the 1-gram table. */
+function step(ctx, rng, noEos) {
+  const forbid = noEos ? M.eos : -1;
+  const k2 = M.i2.get(ctx[0] * M.V + ctx[1]);
+  if (k2 !== undefined) {
+    const t = pick(M.m2, k2, rng, forbid);
+    if (t !== -1) return t;
+  }
+  const k1 = M.i1.get(ctx[1]);
+  if (k1 !== undefined) {
+    const t = pick(M.m1, k1, rng, forbid);
+    if (t !== -1) return t;
+  }
+  return M.eos;
+}
+
+const isWord = t => /^[A-Za-z]/.test(t);
+
+function lastWordId(ids) {
+  for (let i = ids.length - 1; i >= 0; i--) if (isWord(M.vocab[ids[i]])) return ids[i];
+  return -1;
+}
+
+function detokenize(ids) {
+  let s = '';
+  for (const id of ids) {
+    const t = M.vocab[id];
+    if (/^[,;:.!?)]$/.test(t) || s.endsWith('(')) s += t;
+    else if (!s) s = t;
+    else s += ' ' + t;
+  }
+  return s;
+}
+
+function generate(rng, stops, maxTokens, primeIds) {
+  let ctx = [M.bos, M.bos];
+  const out = [];
+  if (primeIds.length) {
+    out.push(...primeIds);
+    const pad = [M.bos, M.bos, ...primeIds];
+    ctx = pad.slice(-2);
+  }
+  for (let i = 0; i < maxTokens; i++) {
+    let tok = step(ctx, rng, false);
+    if (tok === M.eos) {
+      if (out.length && stops.has(lastWordId(out))) break;
+      tok = step(ctx, rng, true);          // end not licensed here: keep going
+      if (tok === M.eos) break;
+    }
+    out.push(tok);
+    ctx = [ctx[1], tok];
+  }
+  return detokenize(out);
+}
+
+function primeToIds(text) {
+  const ids = [];
+  for (const t of text.match(/[A-Za-z][A-Za-z'’-]*|[0-9.]+|[,;:()]|[.!?]/g) || []) {
+    let id = M.byToken.get(t);
+    if (id === undefined) id = M.byToken.get(t.toLowerCase());
+    if (id === undefined) id = M.byToken.get(t[0].toUpperCase() + t.slice(1));
+    if (id !== undefined) ids.push(id);
+  }
+  return ids;
+}
+
+function run() {
+  const n = Math.min(50, Math.max(1, +EL('n').value || 1));
+  const maxTokens = Math.min(800, Math.max(10, +EL('maxlen').value || 120));
+  const seedRaw = EL('seed').value.trim();
+  const seed = seedRaw === '' ? (Math.random() * 1e9) | 0 : (+seedRaw | 0);
+  const stops = new Set(M.stops[EL('stopmode').value]);
+  const rng = mulberry32(seed);
+  const primeIds = primeToIds(EL('prime').value.trim());
+
+  const out = EL('out');
+  out.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement('p');
+    p.textContent = generate(rng, stops, maxTokens, primeIds);
+    out.appendChild(p);
+  }
+  EL('stats').textContent =
+    `${M.sentences} training sentences · ${M.m2.off.length - 1} order-2 states · ` +
+    `${M.total} transitions · ${stops.size} stop words · seed ${seed}`;
+}
+
+EL('copy').addEventListener('click', () => {
+  navigator.clipboard.writeText([...EL('out').querySelectorAll('p')]
+    .map(p => p.textContent).join('\n\n'));
+});
+EL('go').addEventListener('click', run);
+EL('prime').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+
+fetch('model.json').then(r => r.json()).then(d => {
+  M = d;
+  M.V = d.vocab.length;
+  M.i1 = index(d.m1, 1, M.V);
+  M.i2 = index(d.m2, 2, M.V);
+  M.byToken = new Map(d.vocab.map((t, i) => [t, i]));
+  M.total = d.m2.cnt.reduce((a, b) => a + b, 0);   // transitions counted with multiplicity
+  EL('go').disabled = false;
+  EL('stats').textContent =
+    `${d.vocab.length} word types · ${d.m2.off.length - 1} order-2 states · ` +
+    `${M.total} transitions`;
+  run();
+}).catch(e => {
+  EL('stats').textContent = 'failed to load model.json: ' + e.message;
+});
+</script>
+</body>
+</html>

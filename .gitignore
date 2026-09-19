@@ -1,0 +1,6 @@
+# Source PDFs and extracted text are not redistributed; rebuild them locally.
+papers/
+text/
+corpus.txt
+corpus_dedup.txt
+__pycache__/
