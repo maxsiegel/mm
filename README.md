@@ -1,7 +1,7 @@
-# mlynarski-markov
+# mm
 
 A word-level Markov chain trained on the papers of [Wiktor Młynarski](https://scholar.google.com/citations?user=Fp9SbUwAAAAJ),
-with a browser frontend: **https://maxsiegel.github.io/mlynarski-markov/**
+with a browser frontend: **https://maxsiegel.github.io/mm/**
 
 The page ships a table of n-gram transition *counts*, not the corpus. No paper text
 is redistributed here; `papers/`, `text/` and the corpora are gitignored and are
